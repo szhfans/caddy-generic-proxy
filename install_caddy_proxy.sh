@@ -1,10 +1,8 @@
 #!/bin/bash
 # =========================================
-# VPS 一键部署 AnyTLS / Hysteria / TUIC 代理
-# 功能：
-# 1. 443端口 + 域名直连
-# 2. 自动生成客户端配置
-# 3. 支持多协议切换
+# VPS 一键部署 AnyTLS 代理（443端口，域名直连）
+# 自动生成客户端配置文件
+# 支持 Debian/Ubuntu
 # =========================================
 
 set -e
@@ -22,13 +20,25 @@ mkdir -p $CONFIG_DIR $CLIENT_DIR
 apt update -y
 apt install -y curl wget unzip socat
 
-# ===== 下载 sing-box 最新版本 =====
+# ===== 下载 sing-box 最新稳定版 =====
+ARCH="amd64"
+PLATFORM="linux"
+LATEST_TAG=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | cut -d '"' -f 4)
+DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/$LATEST_TAG/sing-box-$PLATFORM-$ARCH.zip"
+
+echo "Downloading sing-box from $DOWNLOAD_URL ..."
+wget -O sing-box.zip $DOWNLOAD_URL
+
+# 检查下载是否成功
+if [ ! -f sing-box.zip ]; then
+    echo "下载失败，请检查网络或手动下载"
+    exit 1
+fi
+
+# 解压安装
 mkdir -p /usr/local/sing-box
-cd /usr/local/sing-box
-LATEST=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep browser_download_url | grep linux-amd64 | cut -d '"' -f 4)
-wget -O sing-box.zip $LATEST
-unzip -o sing-box.zip
-chmod +x sing-box
+unzip -o sing-box.zip -d /usr/local/sing-box
+chmod +x /usr/local/sing-box/sing-box
 
 # ===== 生成服务端配置 =====
 SERVER_CONFIG="$CONFIG_DIR/config.json"
@@ -64,7 +74,7 @@ EOF
 # ===== 创建 systemd 服务 =====
 cat > /etc/systemd/system/proxyserver.service <<EOF
 [Unit]
-Description=ProxyServer AnyTLS/Hysteria/TUIC Service
+Description=ProxyServer AnyTLS Service
 After=network.target
 
 [Service]
@@ -81,7 +91,7 @@ systemctl daemon-reload
 systemctl enable proxyserver
 systemctl restart proxyserver
 
-# ===== 生成客户端配置示例 =====
+# ===== 生成客户端配置 =====
 CLIENT_CONFIG="$CLIENT_DIR/client_anytls.json"
 cat > $CLIENT_CONFIG <<EOF
 {
@@ -99,7 +109,7 @@ cat > $CLIENT_CONFIG <<EOF
 EOF
 
 echo "=============================="
-echo "代理部署完成！"
+echo "AnyTLS 代理部署完成！"
 echo "域名: $DOMAIN"
 echo "端口: $PORT"
 echo "Token: $TOKEN"
