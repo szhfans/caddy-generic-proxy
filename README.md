@@ -5,3 +5,5 @@
 ## 用法
 
 bash <(curl -s https://raw.githubusercontent.com/szhfans/caddy-generic-proxy/main/install_anytls.sh)
+
+bash <(curl -s https://raw.githubusercontent.com/szhfans/caddy-generic-proxy/main/proxyip.sh)
