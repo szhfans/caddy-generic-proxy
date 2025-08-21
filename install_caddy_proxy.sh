@@ -1,5 +1,5 @@
 #!/bin/bash
-# 自动检测 Debian 版本并切换 archive 源，同时生成 Caddy 配置
+# 一键配置 Debian archive 源 + 安装/配置 Caddy
 
 set -e
 
@@ -46,7 +46,27 @@ echo "[*] 升级系统（可选，若要自动升级可取消注释）"
 # apt full-upgrade -y
 
 # ------------------------
-# 配置 Caddy
+# 安装 Caddy（如果未安装）
+# ------------------------
+if ! command -v caddy &> /dev/null; then
+    echo "[*] 未检测到 Caddy，开始安装..."
+    
+    sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg2
+    
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    sudo apt update
+    sudo apt install -y caddy
+    
+    sudo systemctl enable caddy
+    sudo systemctl start caddy
+    echo "[✅] Caddy 安装完成并已启动"
+else
+    echo "[*] 已检测到 Caddy，跳过安装"
+fi
+
+# ------------------------
+# 配置 Caddyfile
 # ------------------------
 # 设置你的域名
 DOMAIN="yourdomain.com"
@@ -70,7 +90,7 @@ EOF
 
 # 重载 Caddy
 echo "[*] 重载 Caddy ..."
-sudo systemctl reload caddy
+sudo systemctl reload caddy || echo "[!] Caddy 可能未启动，跳过重载"
 
 echo "[✅] 脚本执行完成！"
 echo "访问示例: https://$DOMAIN/?url=https://example.com"
