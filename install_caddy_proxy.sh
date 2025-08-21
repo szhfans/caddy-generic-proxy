@@ -1,71 +1,24 @@
 #!/bin/bash
-# 自动检测 Debian 版本并切换 archive 源，同时安装 Caddy 并配置反代 CF 保护网站
+# 自动部署 Caddy 反代 CF 保护网站
+# 说明：使用自己的域名访问所有 CF 验证网站
 
 set -e
 
-# ------------------------
-# 检测 Debian 版本
-# ------------------------
-echo "[*] 检测 Debian 版本..."
-VERSION=$(grep -Po '(?<=VERSION_CODENAME=).*' /etc/os-release || true)
-if [ -z "$VERSION" ]; then
-    echo "[!] 无法检测 Debian 版本，请手动设置 VERSION_CODENAME 变量"
-    exit 1
-fi
-echo "[*] 当前 Debian 版本: $VERSION"
+# 提示用户输入域名和 Cloudflare API Token
+read -p "请输入你自己的域名 (如 proxy.example.com): " DOMAIN
+read -p "请输入你的 Cloudflare API Token (用于 TLS DNS 验证): " CF_API_TOKEN
 
-# ------------------------
-# 切换到 archive 源（旧系统可用）
-# ------------------------
-ARCHIVE_SRC="http://archive.debian.org/debian"
-cp /etc/apt/sources.list /etc/apt/sources.list.bak
-echo "[*] 已备份 /etc/apt/sources.list 到 /etc/apt/sources.list.bak"
-
-cat > /etc/apt/sources.list <<EOF
-deb ${ARCHIVE_SRC} $VERSION main contrib non-free
-deb-src ${ARCHIVE_SRC} $VERSION main contrib non-free
-
-deb ${ARCHIVE_SRC} $VERSION-updates main contrib non-free
-deb-src ${ARCHIVE_SRC} $VERSION-updates main contrib non-free
-
-deb ${ARCHIVE_SRC} $VERSION-backports main contrib non-free
-deb-src ${ARCHIVE_SRC} $VERSION-backports main contrib non-free
-
-deb http://security.debian.org/ $VERSION-security main contrib non-free
-deb-src http://security.debian.org/ $VERSION-security main contrib non-free
-EOF
-
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99disable-check-valid-until
+# 安装 Caddy（Debian 系统示例）
+echo "[*] 安装 Caddy..."
 apt update
+apt install -y debian-keyring debian-archive-keyring apt-transport-https
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.sh' | bash
+apt install -y caddy
 
-echo "[*] 系统软件包已更新（可选升级可手动执行 apt upgrade -y）"
-
-# ------------------------
-# 安装 Caddy
-# ------------------------
-if ! command -v caddy >/dev/null 2>&1; then
-    echo "[*] 安装 Caddy..."
-    apt install -y debian-keyring debian-archive-keyring apt-transport-https
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | apt-key add -
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-    apt update
-    apt install -y caddy
-fi
-
-# ------------------------
-# 提示用户输入域名和 CF API Token
-# ------------------------
-read -p "请输入你的域名（用于 TLS 证书申请）: " DOMAIN
-read -s -p "请输入 Cloudflare API Token（用于 TLS DNS 验证）: " CF_API_TOKEN
-echo -e "\n[*] 域名: $DOMAIN"
-echo "[*] CF API Token 已获取"
-
-# ------------------------
-# 生成 Caddyfile
-# ------------------------
-mkdir -p /etc/caddy
+# 创建 Caddyfile 配置
+echo "[*] 写入 /etc/caddy/Caddyfile ..."
 cat > /etc/caddy/Caddyfile <<EOF
-:443 {
+$DOMAIN:443 {
     encode gzip
     route {
         @upstream {
@@ -84,13 +37,11 @@ cat > /etc/caddy/Caddyfile <<EOF
 }
 EOF
 
-echo "[*] Caddyfile 已生成"
-
-# ------------------------
-# 启用并启动 Caddy
-# ------------------------
+# 重载并启动 Caddy
+echo "[*] 启动并重载 Caddy ..."
+systemctl daemon-reload
 systemctl enable caddy
 systemctl restart caddy
 
-echo "[✅] 安装完成！"
-echo "访问示例: https://$DOMAIN/?url=https://any-cloudflare-protected-site.com"
+echo "[✅] 完成！"
+echo "访问示例: https://$DOMAIN/?url=https://example.com"
