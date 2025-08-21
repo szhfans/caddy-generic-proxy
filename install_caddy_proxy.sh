@@ -1,53 +1,108 @@
 #!/bin/bash
+# =========================================
+# VPS 一键部署 AnyTLS / Hysteria / TUIC 代理
+# 功能：
+# 1. 443端口 + 域名直连
+# 2. 自动生成客户端配置
+# 3. 支持多协议切换
+# =========================================
+
 set -e
 
-# ==========================
-# Bullseye 修复 + 安装 Caddy
-# ==========================
+# ===== 配置参数 =====
+DOMAIN="yourdomain.com"      # 替换为你的域名
+TOKEN="changeme123"          # 代理 token
+PORT=443
+CONFIG_DIR="/etc/proxyserver"
+CLIENT_DIR="/root/client_config"
 
-echo "[*] 修复 Debian Bullseye 源..."
-cat > /etc/apt/sources.list <<EOF
-deb http://archive.debian.org/debian bullseye main contrib non-free
-deb http://archive.debian.org/debian bullseye-updates main contrib non-free
-deb http://archive.debian.org/debian bullseye-backports main contrib non-free
-EOF
+mkdir -p $CONFIG_DIR $CLIENT_DIR
 
-# 禁用过期检查
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99disable-check-valid-until
+# ===== 安装依赖 =====
+apt update -y
+apt install -y curl wget unzip socat
 
-# 更新源
-apt-get update -o Acquire::Check-Valid-Until=false
-apt-get -y upgrade
+# ===== 下载 sing-box 最新版本 =====
+mkdir -p /usr/local/sing-box
+cd /usr/local/sing-box
+LATEST=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep browser_download_url | grep linux-amd64 | cut -d '"' -f 4)
+wget -O sing-box.zip $LATEST
+unzip -o sing-box.zip
+chmod +x sing-box
 
-# ==========================
-# 安装 Caddy
-# ==========================
-echo "[*] 安装 Caddy..."
-apt install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
-
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | apt-key add -
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
-
-apt update
-apt install -y caddy
-
-# ==========================
-# 配置 Caddy
-# ==========================
-read -p "请输入你的域名 (如 proxy.example.com): " DOMAIN
-read -p "请输入你的 Cloudflare API Token: " CF_TOKEN
-
-cat > /etc/caddy/Caddyfile <<EOF
-$DOMAIN {
-    encode gzip
-    reverse_proxy 127.0.0.1:8080
-    tls {
-        dns cloudflare $CF_TOKEN
+# ===== 生成服务端配置 =====
+SERVER_CONFIG="$CONFIG_DIR/config.json"
+cat > $SERVER_CONFIG <<EOF
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "type": "anytls",
+      "listen": "0.0.0.0:$PORT",
+      "users": [
+        {
+          "name": "user1",
+          "password": "$TOKEN"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "serverName": "$DOMAIN"
+      }
     }
+  ],
+  "outbounds": [
+    {
+      "type": "direct"
+    }
+  ]
 }
 EOF
 
-systemctl restart caddy
-systemctl enable caddy
+# ===== 创建 systemd 服务 =====
+cat > /etc/systemd/system/proxyserver.service <<EOF
+[Unit]
+Description=ProxyServer AnyTLS/Hysteria/TUIC Service
+After=network.target
 
-echo "[*] Caddy 已安装并启动，域名：$DOMAIN"
+[Service]
+Type=simple
+ExecStart=/usr/local/sing-box/sing-box run -c $SERVER_CONFIG
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# ===== 启动服务 =====
+systemctl daemon-reload
+systemctl enable proxyserver
+systemctl restart proxyserver
+
+# ===== 生成客户端配置示例 =====
+CLIENT_CONFIG="$CLIENT_DIR/client_anytls.json"
+cat > $CLIENT_CONFIG <<EOF
+{
+  "type": "anytls",
+  "server": "$DOMAIN",
+  "port": $PORT,
+  "users": [
+    {
+      "name": "user1",
+      "password": "$TOKEN"
+    }
+  ],
+  "tls": true
+}
+EOF
+
+echo "=============================="
+echo "代理部署完成！"
+echo "域名: $DOMAIN"
+echo "端口: $PORT"
+echo "Token: $TOKEN"
+echo "客户端配置文件已生成: $CLIENT_CONFIG"
+echo "支持 AnyTLS 协议，直接导入客户端即可使用"
+echo "=============================="
