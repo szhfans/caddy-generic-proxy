@@ -4,6 +4,4 @@
 
 ## 用法
 
-```bash
-chmod +x install_caddy_proxy.sh
-sudo ./install_caddy_proxy.sh
+bash <(curl -s https://raw.githubusercontent.com/szhfans/caddy-generic-proxy/main/install_caddy_proxy.sh)
