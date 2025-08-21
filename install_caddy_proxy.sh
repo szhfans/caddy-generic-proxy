@@ -45,20 +45,27 @@ echo "[*] 升级系统（可选，若要自动升级可取消注释）"
 # apt upgrade -y
 # apt full-upgrade -y
 
-echo "[*] 完成！"            header_up X-Real-IP {remote_host}
-            header_up X-Forwarded-For {remote_host}
-            header_up X-Forwarded-Proto {scheme}
-        }
+# ------------------------
+# 写入 Caddy 配置
+# ------------------------
+DOMAIN="yourdomain.com"
+cat > /etc/caddy/Caddyfile <<'EOF'
+https://'"$DOMAIN"' {
+    reverse_proxy / {
+        to http://127.0.0.1:8080
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
     }
 
-    respond "Usage: https://$DOMAIN/?url=https://example.com"
+    respond "Usage: https://'"$DOMAIN"'/?url=https://example.com"
 }
 EOF
 
 # ------------------------
 # 重载 Caddy
 # ------------------------
-echo "[*] 启动 Caddy ..."
+echo "[*] 重载 Caddy ..."
 sudo systemctl reload caddy
 
 echo "[✅] 安装完成！"
