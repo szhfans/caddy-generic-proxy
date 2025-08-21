@@ -1,5 +1,5 @@
 #!/bin/bash
-# 一键配置 Debian archive 源 + 安装/配置 Caddy
+# 自动检测 Debian 版本并切换 archive 源，同时安装配置 Caddy
 
 set -e
 
@@ -41,56 +41,71 @@ echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99disable-check
 echo "[*] 更新软件包列表..."
 apt update
 
-echo "[*] 升级系统（可选，若要自动升级可取消注释）"
+echo "[*] 升级系统（可选）"
 # apt upgrade -y
 # apt full-upgrade -y
 
 # ------------------------
-# 安装 Caddy（如果未安装）
+# 安装 Caddy
 # ------------------------
-if ! command -v caddy &> /dev/null; then
-    echo "[*] 未检测到 Caddy，开始安装..."
-    
-    sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg2
-    
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+if ! command -v caddy >/dev/null 2>&1; then
+    echo "[*] Caddy 未安装，开始安装..."
+    apt install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg2
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | sudo tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null
     echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-    sudo apt update
-    sudo apt install -y caddy
-    
-    sudo systemctl enable caddy
-    sudo systemctl start caddy
-    echo "[✅] Caddy 安装完成并已启动"
+    apt update
+    apt install -y caddy
 else
-    echo "[*] 已检测到 Caddy，跳过安装"
+    echo "[*] Caddy 已安装，跳过安装"
 fi
 
 # ------------------------
-# 配置 Caddyfile
+# 确保 Caddy systemd 单元存在
 # ------------------------
-# 设置你的域名
-DOMAIN="yourdomain.com"
+if ! systemctl list-unit-files | grep -q '^caddy.service'; then
+    echo "[*] 创建 Caddy systemd 单元..."
+    mkdir -p /etc/caddy
+    cat > /etc/systemd/system/caddy.service <<EOF
+[Unit]
+Description=Caddy web server
+After=network.target
 
-# 确保 Caddy 配置目录存在
-sudo mkdir -p /etc/caddy
+[Service]
+ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile
+Restart=on-failure
+User=root
+Group=root
 
-# 写入 Caddyfile
-sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
-https://$DOMAIN {
-    reverse_proxy / {
-        to http://127.0.0.1:8080
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
-    }
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable caddy
+fi
 
-    respond "Usage: https://$DOMAIN/?url=https://example.com"
+# ------------------------
+# 写入 Caddyfile 示例
+# ------------------------
+if [ ! -f /etc/caddy/Caddyfile ]; then
+    echo "[*] 创建 /etc/caddy/Caddyfile 示例"
+    DOMAIN="example.com"  # 请替换为你自己的域名
+    cat > /etc/caddy/Caddyfile <<EOF
+{$DOMAIN} {
+    respond "Hello from Caddy"
 }
 EOF
+fi
 
-# 重载 Caddy
-echo "[*] 重载 Caddy ..."
-sudo systemctl reload caddy || echo "[!] Caddy 可能未启动，跳过重载"
+# ------------------------
+# 启动或重载 Caddy
+# ------------------------
+if systemctl list-units --all | grep -q caddy.service; then
+    echo "[*] 重载 Caddy..."
+    systemctl reload caddy || systemctl start caddy
+else
+    echo "[!] Caddy systemd 单元不存在，无法重载"
+fi
 
-echo "[✅] 脚本执行完成！"
-echo "访问示例: https://$DOMAIN/?url=https://example.com"
+echo "[✅] 安装完成！"
+echo "访问示例: https://$DOMAIN/"
