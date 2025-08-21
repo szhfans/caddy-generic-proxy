@@ -1,22 +1,31 @@
 #!/bin/bash
 
-# 目标域名
-TARGET_DOMAIN="example.com"
+# ---------- 配置 ----------
+TARGET_DOMAIN="example.com"   # 替换为你要代理的域名
+NGINX_CONF_DIR="/etc/nginx/conf.d"
+UPSTREAM_CONF="$NGINX_CONF_DIR/cf_upstream.conf"
 
-# 临时文件
-TMP_CF_IP="/tmp/cf-ips.txt"
-TMP_UPSTREAM="/etc/nginx/conf.d/cf_upstream.conf"
+# ---------- 安装 Nginx ----------
+if ! command -v nginx &> /dev/null; then
+    echo "Nginx 未安装，开始安装..."
+    sudo apt update
+    sudo apt install -y nginx
+fi
 
-# 拉取 Cloudflare 公共 IP 段
+# ---------- 创建 conf.d 目录 ----------
+sudo mkdir -p $NGINX_CONF_DIR
+
+# ---------- 获取 Cloudflare IP ----------
+TMP_CF_IP=$(mktemp)
 curl -s https://www.cloudflare.com/ips-v4 > $TMP_CF_IP
 curl -s https://www.cloudflare.com/ips-v6 >> $TMP_CF_IP
 
-# 获取目标域名的 A/AAAA 记录
+# ---------- 获取目标域名的 A/AAAA 记录 ----------
 TARGET_IPS=$(dig +short $TARGET_DOMAIN A)
 TARGET_IPS6=$(dig +short $TARGET_DOMAIN AAAA)
 TARGET_IPS="$TARGET_IPS $TARGET_IPS6"
 
-# 过滤出属于 CF 的 IP
+# ---------- 生成 upstream ----------
 CF_BACKEND=""
 for ip in $TARGET_IPS; do
     for cf in $(cat $TMP_CF_IP); do
@@ -26,15 +35,14 @@ for ip in $TARGET_IPS; do
     done
 done
 
-# 如果没有匹配到 CF IP，则直接使用域名
+# fallback
 if [ -z "$CF_BACKEND" ]; then
     CF_BACKEND="    server $TARGET_DOMAIN:80;"
 fi
 
-# 生成 Nginx upstream 配置
-cat > $TMP_UPSTREAM <<EOF
+# ---------- 写入 Nginx 配置 ----------
+sudo tee $UPSTREAM_CONF > /dev/null <<EOF
 upstream cf_backend {
-    # 自动轮询，提高稳定性
 $CF_BACKEND
 }
 
@@ -53,6 +61,6 @@ server {
 }
 EOF
 
-# 重载 Nginx
-nginx -s reload
+# ---------- 重载 Nginx ----------
+sudo nginx -t && sudo systemctl reload nginx
 echo "Nginx 配置已更新并重载"
