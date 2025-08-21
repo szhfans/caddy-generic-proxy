@@ -1,43 +1,44 @@
 #!/bin/bash
 set -e
 
-echo "[*] 修复 Debian Bullseye 源..."
-# 备份原 sources.list
-cp /etc/apt/sources.list /etc/apt/sources.list.bak
+echo "请 输 入 你 自 己 的 域 名 (如 proxy.example.com):"
+read DOMAIN
+echo "请 输 入 你 的 Cloudflare API Token (用 于 TLS DNS 验 证):"
+read CF_TOKEN
 
-# 写入 Archive 源
-cat > /etc/apt/sources.list <<EOF
+# 修复 Bullseye 源问题
+echo "[*] 配置 Debian Bullseye Archive 源..."
+cat >/etc/apt/sources.list <<EOF
 deb http://archive.debian.org/debian/ bullseye main contrib non-free
 deb http://archive.debian.org/debian/ bullseye-updates main contrib non-free
-deb http://archive.debian.org/debian-security bullseye-security main contrib non-free
 deb http://archive.debian.org/debian/ bullseye-backports main contrib non-free
 EOF
+echo 'Acquire::Check-Valid-Until "false";' >/etc/apt/apt.conf.d/99disable-check-valid-until
 
-# 禁用有效期检查
-echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99disable-check-valid-until
+# 更新系统
+apt-get update -o Acquire::Check-Valid-Until=false
+apt-get install -y curl sudo gnupg2 lsb-release
 
-echo "[*] 更新软件源并安装依赖..."
-apt update -y
-apt install -y curl sudo gnupg2 lsb-release
-
-echo "[*] 安装 Caddy..."
-# 官方安装方式
+# 安装 Caddy
+echo "[*] 安 装 Caddy..."
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.sh' | bash
-apt install -y caddy
+apt-get install -y caddy
 
-# 让用户输入信息
-read -p "请输入你自己的域名 (如 proxy.example.com): " DOMAIN
-read -p "请输入你的 Cloudflare API Token (用于 TLS DNS 验证): " CF_TOKEN
-
-# 写入 Caddyfile
-cat > /etc/caddy/Caddyfile <<EOF
+# 配置 Caddy
+echo "[*] 配置 Caddy 反代..."
+cat >/etc/caddy/Caddyfile <<EOF
 $DOMAIN:443 {
     encode gzip
-    reverse_proxy {
-        header_up Host {http.reverse_proxy.upstream.hostport}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
+    route {
+        @upstream {
+            query url
+        }
+        reverse_proxy @upstream {
+            header_up Host {http.reverse_proxy.upstream.hostport}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
     }
     tls {
         dns cloudflare $CF_TOKEN
@@ -45,8 +46,10 @@ $DOMAIN:443 {
 }
 EOF
 
-echo "[*] 启动并启用 Caddy 服务..."
+# 启动 Caddy
+systemctl daemon-reload
 systemctl enable caddy
 systemctl restart caddy
 
-echo "[*] 安装完成！你可以通过 https://$DOMAIN 访问你的代理服务"
+echo "[*] Caddy 安装并启动完成！"
+echo "访问 https://$DOMAIN 测试反代是否成功"
