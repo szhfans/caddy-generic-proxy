@@ -1,6 +1,6 @@
 #!/bin/bash
 # =========================================
-# VPS 一键部署 AnyTLS 代理（自动 TLS 证书，443端口，域名直连）
+# VPS 一键部署 AnyTLS 代理（自签名 TLS，443端口，域名直连）
 # 支持 Debian/Ubuntu
 # =========================================
 
@@ -23,18 +23,19 @@ mkdir -p $CONFIG_DIR $CLIENT_DIR
 
 # ===== 安装依赖 =====
 apt update -y
-apt install -y curl wget unzip socat tar certbot
+apt install -y curl wget unzip socat tar openssl
 
-# ===== 获取证书 =====
-echo "正在申请 TLS 证书，请确保域名已正确解析到本 VPS"
-certbot certonly --standalone --non-interactive --agree-tos -m admin@$DOMAIN -d $DOMAIN
-
-CERT_PATH="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
-KEY_PATH="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+# ===== 生成自签名证书 =====
+CERT_PATH="$CONFIG_DIR/fullchain.pem"
+KEY_PATH="$CONFIG_DIR/privkey.pem"
 
 if [ ! -f "$CERT_PATH" ] || [ ! -f "$KEY_PATH" ]; then
-    echo "证书申请失败，请检查域名解析"
-    exit 1
+    echo "生成自签名 TLS 证书..."
+    openssl req -x509 -nodes -days 365 \
+        -newkey rsa:2048 \
+        -keyout "$KEY_PATH" \
+        -out "$CERT_PATH" \
+        -subj "/CN=$DOMAIN"
 fi
 
 # ===== 下载 sing-box 最新稳定版 =====
@@ -45,12 +46,6 @@ DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/$LATEST_TAG
 
 echo "Downloading sing-box from $DOWNLOAD_URL ..."
 wget -O sing-box.tar.gz $DOWNLOAD_URL
-
-# 检查下载是否成功
-if [ ! -f sing-box.tar.gz ]; then
-    echo "下载失败，请检查网络或手动下载"
-    exit 1
-fi
 
 # 解压安装
 mkdir -p /usr/local/sing-box
@@ -127,11 +122,11 @@ cat > $CLIENT_CONFIG <<EOF
 EOF
 
 echo "=============================="
-echo "AnyTLS 代理部署完成！"
+echo "AnyTLS 代理部署完成（自签名证书）！"
 echo "域名: $DOMAIN"
 echo "端口: $PORT"
 echo "密码: $TOKEN"
 echo "客户端配置文件已生成: $CLIENT_CONFIG"
 echo "证书路径: $CERT_PATH / $KEY_PATH"
-echo "支持 AnyTLS 协议，直接导入客户端即可使用"
+echo "注意：客户端需要信任自签名证书"
 echo "=============================="
