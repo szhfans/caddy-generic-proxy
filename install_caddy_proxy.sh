@@ -46,16 +46,17 @@ echo "[*] 升级系统（可选，若要自动升级可取消注释）"
 # apt full-upgrade -y
 
 # ------------------------
-# 确保 Caddy 配置目录存在
+# 配置 Caddy
 # ------------------------
+# 设置你的域名
+DOMAIN="yourdomain.com"
+
+# 确保 Caddy 配置目录存在
 sudo mkdir -p /etc/caddy
 
-# ------------------------
-# 写入 Caddy 配置
-# ------------------------
-DOMAIN="yourdomain.com"
-sudo tee /etc/caddy/Caddyfile > /dev/null <<'EOF'
-https://'"$DOMAIN"' {
+# 写入 Caddyfile
+sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
+https://$DOMAIN {
     reverse_proxy / {
         to http://127.0.0.1:8080
         header_up X-Real-IP {remote_host}
@@ -63,15 +64,13 @@ https://'"$DOMAIN"' {
         header_up X-Forwarded-Proto {scheme}
     }
 
-    respond "Usage: https://'"$DOMAIN"'/?url=https://example.com"
+    respond "Usage: https://$DOMAIN/?url=https://example.com"
 }
 EOF
 
-# ------------------------
 # 重载 Caddy
-# ------------------------
 echo "[*] 重载 Caddy ..."
 sudo systemctl reload caddy
 
-echo "[✅] 安装完成！"
+echo "[✅] 脚本执行完成！"
 echo "访问示例: https://$DOMAIN/?url=https://example.com"
