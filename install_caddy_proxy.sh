@@ -1,5 +1,5 @@
 #!/bin/bash
-# 自动检测 Debian 版本并切换 archive 源
+# 自动检测 Debian 版本并切换 archive 源，同时生成 Caddy 配置
 
 set -e
 
@@ -46,10 +46,15 @@ echo "[*] 升级系统（可选，若要自动升级可取消注释）"
 # apt full-upgrade -y
 
 # ------------------------
+# 确保 Caddy 配置目录存在
+# ------------------------
+sudo mkdir -p /etc/caddy
+
+# ------------------------
 # 写入 Caddy 配置
 # ------------------------
 DOMAIN="yourdomain.com"
-cat > /etc/caddy/Caddyfile <<'EOF'
+sudo tee /etc/caddy/Caddyfile > /dev/null <<'EOF'
 https://'"$DOMAIN"' {
     reverse_proxy / {
         to http://127.0.0.1:8080
