@@ -1,8 +1,25 @@
 #!/bin/bash
-# 自动检测 Debian 版本并切换 archive 源，同时安装配置 Caddy
+# 自动部署 Debian + Caddy + TLS + Cloudflare DNS 验证反代
+# 用法: ./deploy_caddy_cf.sh <DOMAIN> <UPSTREAM_URL> <CF_API_TOKEN>
 
 set -e
 
+# ------------------------
+# 参数检查
+# ------------------------
+if [ $# -ne 3 ]; then
+    echo "Usage: $0 <DOMAIN> <UPSTREAM_URL> <CF_API_TOKEN>"
+    echo "Example: $0 example.com https://example-upstream.com abcdef123456"
+    exit 1
+fi
+
+DOMAIN="$1"
+UPSTREAM="$2"
+CF_API_TOKEN="$3"
+
+# ------------------------
+# 检测 Debian 版本并切换 archive 源
+# ------------------------
 echo "[*] 检测 Debian 版本..."
 VERSION=$(grep -Po '(?<=VERSION_CODENAME=).*' /etc/os-release || true)
 if [ -z "$VERSION" ]; then
@@ -11,14 +28,11 @@ if [ -z "$VERSION" ]; then
 fi
 echo "[*] 当前 Debian 版本: $VERSION"
 
-# 定义 archive 源
 ARCHIVE_SRC="http://archive.debian.org/debian"
 
-# 备份 sources.list
 cp /etc/apt/sources.list /etc/apt/sources.list.bak
 echo "[*] 已备份 /etc/apt/sources.list 到 /etc/apt/sources.list.bak"
 
-# 写入新的 archive 源
 cat > /etc/apt/sources.list <<EOF
 deb ${ARCHIVE_SRC} $VERSION main contrib non-free
 deb-src ${ARCHIVE_SRC} $VERSION main contrib non-free
@@ -33,79 +47,53 @@ deb http://security.debian.org/ $VERSION-security main contrib non-free
 deb-src http://security.debian.org/ $VERSION-security main contrib non-free
 EOF
 
-echo "[*] sources.list 已更新为 archive 源"
-
-# 配置 APT 允许使用过期签名
 echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99disable-check-valid-until
 
 echo "[*] 更新软件包列表..."
 apt update
 
-echo "[*] 升级系统（可选）"
-# apt upgrade -y
-# apt full-upgrade -y
-
 # ------------------------
 # 安装 Caddy
 # ------------------------
-if ! command -v caddy >/dev/null 2>&1; then
-    echo "[*] Caddy 未安装，开始安装..."
-    apt install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg2
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor | sudo tee /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null
-    echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-    apt update
-    apt install -y caddy
-else
-    echo "[*] Caddy 已安装，跳过安装"
-fi
+echo "[*] 安装 Caddy..."
+apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | apt-key add -
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+apt update
+apt install -y caddy
 
 # ------------------------
-# 确保 Caddy systemd 单元存在
+# 写入 Caddyfile（Cloudflare DNS 验证）
 # ------------------------
-if ! systemctl list-unit-files | grep -q '^caddy.service'; then
-    echo "[*] 创建 Caddy systemd 单元..."
-    mkdir -p /etc/caddy
-    cat > /etc/systemd/system/caddy.service <<EOF
-[Unit]
-Description=Caddy web server
-After=network.target
+mkdir -p /etc/caddy
+cat > /etc/caddy/Caddyfile <<EOF
+{
+    email you@example.com
+    acme_dns cloudflare {env.CF_API_TOKEN}
+}
 
-[Service]
-ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile
-ExecReload=/usr/bin/caddy reload --config /etc/caddy/Caddyfile
-Restart=on-failure
-User=root
-Group=root
+$DOMAIN {
+    reverse_proxy $UPSTREAM {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
 
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable caddy
-fi
-
-# ------------------------
-# 写入 Caddyfile 示例
-# ------------------------
-if [ ! -f /etc/caddy/Caddyfile ]; then
-    echo "[*] 创建 /etc/caddy/Caddyfile 示例"
-    DOMAIN="example.com"  # 请替换为你自己的域名
-    cat > /etc/caddy/Caddyfile <<EOF
-{$DOMAIN} {
-    respond "Hello from Caddy"
+    encode gzip
+    respond "Caddy 反代已部署成功"
 }
 EOF
-fi
+
+# 设置环境变量供 Caddy 使用
+echo "export CF_API_TOKEN=$CF_API_TOKEN" > /etc/profile.d/caddy_cf.sh
+chmod +x /etc/profile.d/caddy_cf.sh
+source /etc/profile.d/caddy_cf.sh
 
 # ------------------------
-# 启动或重载 Caddy
+# 启用并重载 Caddy
 # ------------------------
-if systemctl list-units --all | grep -q caddy.service; then
-    echo "[*] 重载 Caddy..."
-    systemctl reload caddy || systemctl start caddy
-else
-    echo "[!] Caddy systemd 单元不存在，无法重载"
-fi
+systemctl enable caddy
+systemctl restart caddy
 
-echo "[✅] 安装完成！"
-echo "访问示例: https://$DOMAIN/"
+echo "[✅] Caddy + TLS + Cloudflare DNS 验证反代部署完成！"
+echo "访问示例: https://$DOMAIN"
