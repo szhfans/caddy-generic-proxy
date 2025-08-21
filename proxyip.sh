@@ -1,179 +1,82 @@
 #!/bin/bash
-# 一键部署 Cloudflare IP 反代 + 健康检测 + 零中断切换
-# 使用方法: sudo bash cf_proxy_full.sh
+set -e
 
-# ---------- 用户配置 ----------
-read -p "请输入 Cloudflare 域名列表（用空格分开）: " -a CF_DOMAINS
-read -p "请输入 VPS 监听 TCP/HTTPS 端口（默认8443）: " PORT_TCP
-PORT_TCP=${PORT_TCP:-8443}
-read -p "请输入 VPS 监听 HTTP 端口（默认8080）: " PORT_HTTP
-PORT_HTTP=${PORT_HTTP:-8080}
-# --------------------------------
+echo "=== 更新系统 & 安装依赖 ==="
+apt update
+apt install -y curl wget unzip lsb-release software-properties-common git
 
-NGINX_CONF="/etc/nginx/nginx.conf"
-BACKUP_CONF="/etc/nginx/nginx.conf.bak"
-LOG_FILE="/var/log/cf_proxy.log"
-AUTO_SCRIPT="/usr/local/bin/update_cf_ips.sh"
+echo "=== 安装 OpenResty ==="
+wget -qO - https://openresty.org/package/pubkey.gpg | apt-key add -
+add-apt-repository "deb http://openresty.org/package/debian $(lsb_release -sc) main"
+apt update
+apt install -y openresty
 
-# 安装必要软件
-echo "[*] 更新系统并安装 Nginx + dig..."
-sudo apt update -y
-sudo apt install nginx dnsutils -y
+echo "=== 安装 LuaRocks & Lua 库 ==="
+apt install -y luarocks
+luarocks install lua-resty-http
+luarocks install lua-resty-iputils
 
-# 备份 Nginx 配置
-if [ ! -f "$BACKUP_CONF" ]; then
-    sudo cp $NGINX_CONF $BACKUP_CONF
-fi
+echo "=== 配置 Nginx 动态 CF 反代 ==="
+cat > /etc/openresty/conf.d/dynamic_cf_proxy.conf << 'EOF'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
 
-# 获取 CF IP 列表
-get_cf_ips() {
-    IPS=()
-    for DOMAIN in "${CF_DOMAINS[@]}"; do
-        IP=$(dig +short $DOMAIN | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -n1)
-        if [ ! -z "$IP" ]; then
-            IPS+=("$IP $DOMAIN")
-        fi
-    done
-    echo "${IPS[@]}"
-}
+    server_name _;
 
-CF_IPS=($(get_cf_ips))
-if [ ${#CF_IPS[@]} -eq 0 ]; then
-    echo "[❌] 无法获取任何 CF IP，请检查域名或网络！"
-    exit 1
-fi
+    resolver 1.1.1.1 valid=30s ipv6=on;
+    set $upstream "";
 
-echo "[*] 当前可用 CF 节点:"
-for ipdomain in "${CF_IPS[@]}"; do
-    echo "  $ipdomain"
-done
+    set_by_lua_block $upstream {
+        local resolver = require "resty.dns.resolver"
+        local iputils = require "resty.iputils"
+        iputils.enable_lrucache()
 
-# 写入初始 Nginx 配置
-write_nginx() {
-sudo tee $NGINX_CONF > /dev/null <<EOF
-user www-data;
-worker_processes auto;
-pid /run/nginx.pid;
-
-events {
-    worker_connections 1024;
-}
-
-stream {
-    upstream cf_up {
-EOF
-
-    for ipdomain in "${CF_IPS[@]}"; do
-        IP=$(echo $ipdomain | awk '{print $1}')
-        echo "        server $IP:443;" | sudo tee -a $NGINX_CONF > /dev/null
-    done
-
-sudo tee -a $NGINX_CONF > /dev/null <<EOF
-    }
-
-    server {
-        listen $PORT_TCP;
-        proxy_pass cf_up;
-
-        proxy_ssl on;
-        proxy_ssl_server_name on;
-        proxy_ssl_name ${CF_DOMAINS[0]};
-    }
-}
-
-http {
-    include       mime.types;
-    default_type  application/octet-stream;
-
-    server {
-        listen $PORT_HTTP;
-
-        location / {
-            proxy_pass https://${CF_IPS[0]% *}; # 初始第一个可用 IP
-            proxy_set_header Host ${CF_DOMAINS[0]};
-            proxy_ssl_server_name on;
-            proxy_ssl_name ${CF_DOMAINS[0]};
+        local cf_ranges = {
+            -- IPv4
+            "103.21.244.0/22","103.22.200.0/22","103.31.4.0/22",
+            "104.16.0.0/13","104.24.0.0/14","108.162.192.0/18",
+            "131.0.72.0/22","141.101.64.0/18","162.158.0.0/15",
+            "172.64.0.0/13","173.245.48.0/20","188.114.96.0/20",
+            "190.93.240.0/20","197.234.240.0/22","198.41.128.0/17",
+            -- IPv6
+            "2400:cb00::/32","2606:4700::/32","2803:f800::/32",
+            "2405:b500::/32","2405:8100::/32","2a06:98c0::/29",
+            "2c0f:f248::/32"
         }
+
+        local host = ngx.var.host
+        local r, err = resolver:new{nameservers={"1.1.1.1","1.0.0.1"}, retrans=2, timeout=2000}
+        if not r then return "" end
+
+        local answers, err = r:query(host)
+        if not answers then return "" end
+
+        for _, ans in ipairs(answers) do
+            if ans.address then
+                for _, cidr in ipairs(cf_ranges) do
+                    if iputils.ip_in_cidr(ans.address, cidr) then
+                        return ans.address
+                    end
+                end
+            end
+        end
+        return ""
+    }
+
+    location / {
+        proxy_pass http://$upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 EOF
-}
 
-write_nginx
+echo "=== 启动 OpenResty ==="
+systemctl enable openresty
+systemctl restart openresty
 
-# 检查并启动 Nginx
-sudo nginx -t && sudo systemctl restart nginx
-sudo systemctl enable nginx
-echo "[✅] Nginx 初始部署完成！"
-
-# 创建自动更新 + 健康检测脚本
-sudo tee $AUTO_SCRIPT > /dev/null <<'EOL'
-#!/bin/bash
-NGINX_CONF="/etc/nginx/nginx.conf"
-LOG_FILE="/var/log/cf_proxy.log"
-
-# 配置你的 CF 域名列表
-CF_DOMAINS=("example.com" "example2.com")  # 注意：部署后可手动修改为真实域名
-
-# 获取 CF IP 列表
-get_cf_ips() {
-    IPS=()
-    for DOMAIN in "${CF_DOMAINS[@]}"; do
-        IP=$(dig +short $DOMAIN | grep -E "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$" | head -n1)
-        if [ ! -z "$IP" ]; then
-            IPS+=("$IP $DOMAIN")
-        fi
-    done
-    echo "${IPS[@]}"
-}
-
-CF_IPS=($(get_cf_ips))
-if [ ${#CF_IPS[@]} -eq 0 ]; then
-    echo "$(date '+%F %T') [❌] 无可用 CF IP" >> $LOG_FILE
-    exit 0
-fi
-
-# 健康检测函数
-check_ip() {
-    local IP=$1
-    timeout 2 bash -c "echo > /dev/tcp/$IP/443" &>/dev/null
-    return $?
-}
-
-# 找到第一个可用节点
-AVAILABLE_IP=""
-for ipdomain in "${CF_IPS[@]}"; do
-    IP=$(echo $ipdomain | awk '{print $1}')
-    if check_ip $IP; then
-        AVAILABLE_IP=$IP
-        DOMAIN=$(echo $ipdomain | awk '{print $2}')
-        break
-    fi
-done
-
-if [ -z "$AVAILABLE_IP" ]; then
-    echo "$(date '+%F %T') [❌] 所有 CF IP 均不可用" >> $LOG_FILE
-    exit 0
-fi
-
-# 检查当前 Nginx 配置中的 IP
-CURRENT_IP=$(grep -oP '(?<=server )([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)(?=:443;)' $NGINX_CONF | head -n1)
-
-# 如果不一样，更新 Nginx upstream
-if [ "$AVAILABLE_IP" != "$CURRENT_IP" ]; then
-    sed -i "s/$CURRENT_IP/$AVAILABLE_IP/g" $NGINX_CONF
-    nginx -t && systemctl reload nginx
-    echo "$(date '+%F %T') [✅] CF IP 自动切换: $CURRENT_IP -> $AVAILABLE_IP" >> $LOG_FILE
-fi
-EOL
-
-sudo chmod +x $AUTO_SCRIPT
-
-# 设置定时任务，每2分钟检测一次
-(crontab -l 2>/dev/null; echo "*/2 * * * * $AUTO_SCRIPT") | crontab -
-
-echo "[✅] 多节点自动负载 + 健康检测 + 零中断切换已启用"
-echo "VPS IP 访问方式:"
-echo "  TCP/HTTPS: https://VPS_IP:$PORT_TCP"
-echo "  HTTP: http://VPS_IP:$PORT_HTTP"
-echo "日志路径: $LOG_FILE"
+echo "=== 部署完成 ==="
+echo "访问任何 Cloudflare 域名即可通过 VPS 反代 CF IP。"
