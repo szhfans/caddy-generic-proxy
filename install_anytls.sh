@@ -1,145 +1,90 @@
 #!/bin/bash
+# AnyTLS 一键安装脚本（自签证书版，交互式端口+节点链接）
 
-# ===============================
-# AnyTLS + Sing-box 一键部署脚本
-# ===============================
+set -e
 
-# 检查是否为 root
-if [ "$EUID" -ne 0 ]; then
-    echo "请使用 root 用户运行此脚本！"
-    exit 1
-fi
+# 颜色输出
+green(){ echo -e "\033[32m$1\033[0m"; }
+red(){ echo -e "\033[31m$1\033[0m"; }
 
-# 更新系统并安装必要工具
-apt update && apt install -y wget curl tar unzip socat lsof openssl jq
+# 检查root
+[[ $EUID -ne 0 ]] && red "请使用 root 运行此脚本" && exit 1
 
-# -------------------------------
-# 用户输入
-# -------------------------------
-read -p "请输入你的域名 (必须解析到本 VPS): " DOMAIN
-read -p "请输入代理端口 (建议 443): " PORT
-read -p "请输入任意密码: " PASSWORD
+# 输入端口
+read -p "请输入 AnyTLS 监听端口 [默认:443]：" PORT
+PORT=${PORT:-443}
 
-# -------------------------------
-# 证书路径
-# -------------------------------
-CERT_DIR="/etc/letsencrypt/live/$DOMAIN"
-CERT_FILE="$CERT_DIR/fullchain.pem"
-KEY_FILE="$CERT_DIR/privkey.pem"
+# 输入密码
+read -p "请输入连接密码 [默认:changeme123]：" PASSWORD
+PASSWORD=${PASSWORD:-changeme123}
 
-# -------------------------------
-# 安装 Certbot 并尝试获取证书
-# -------------------------------
-apt install -y certbot
+# 安装依赖
+green "[1/5] 安装依赖..."
+apt update -y
+apt install -y curl wget unzip socat openssl
 
-echo "尝试申请 TLS 证书，请确保域名已正确解析到本 VPS..."
-certbot certonly --standalone -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN
-if [ $? -ne 0 ]; then
-    echo "Let's Encrypt 证书申请失败，使用自签名证书代替..."
-    mkdir -p /etc/sing-box/cert
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-      -keyout /etc/sing-box/cert/privkey.pem \
-      -out /etc/sing-box/cert/fullchain.pem \
-      -subj "/CN=$DOMAIN"
-    CERT_FILE="/etc/sing-box/cert/fullchain.pem"
-    KEY_FILE="/etc/sing-box/cert/privkey.pem"
-    CERT_TYPE="自签名"
-else
-    CERT_TYPE="Let's Encrypt"
-fi
+# 创建目录
+mkdir -p /etc/anytls
+cd /etc/anytls
 
-# -------------------------------
-# 下载最新 sing-box
-# -------------------------------
-echo "正在下载最新 Sing-box..."
-LATEST_URL=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest \
-| jq -r '.assets[] | select(.name|test("linux-amd64.tar.gz")) | .browser_download_url')
-wget -O sing-box.tar.gz $LATEST_URL
-tar -xzf sing-box.tar.gz
-chmod +x sing-box
-mv sing-box /usr/local/bin/
+# 下载 AnyTLS 最新版本 (示例用 v0.9.7)
+green "[2/5] 下载 AnyTLS..."
+ANYTLS_VER="0.9.7"
+wget -N https://github.com/anytls/anytls/releases/download/v${ANYTLS_VER}/anytls-linux-amd64.zip
+unzip -o anytls-linux-amd64.zip
+chmod +x anytls
 
-# -------------------------------
-# 生成 sing-box 配置
-# -------------------------------
-CONFIG_FILE="/etc/sing-box.json"
+# 生成自签证书
+green "[3/5] 生成自签证书..."
+openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+  -subj "/C=US/ST=CA/L=SanFrancisco/O=AnyTLS/OU=Server/CN=example.com" \
+  -keyout /etc/anytls/anytls.key -out /etc/anytls/anytls.crt
 
-cat > $CONFIG_FILE <<EOF
+# 生成配置文件
+green "[4/5] 创建配置文件..."
+cat > /etc/anytls/config.json <<EOF
 {
-  "inbounds": [
-    {
-      "type": "anytls",
-      "listen": "0.0.0.0",
-      "listen_port": $PORT,
-      "password": "$PASSWORD",
-      "transport": {
-        "type": "tcp"
-      },
-      "tls": {
-        "cert": "$CERT_FILE",
-        "key": "$KEY_FILE"
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct"
-    }
-  ]
+  "listen": ":${PORT}",
+  "cert": "/etc/anytls/anytls.crt",
+  "key": "/etc/anytls/anytls.key",
+  "auth": {
+    "mode": "password",
+    "password": "${PASSWORD}"
+  }
 }
 EOF
 
-# -------------------------------
-# 创建 systemd 服务
-# -------------------------------
-cat > /etc/systemd/system/sing-box.service <<EOF
+# systemd 服务
+cat > /etc/systemd/system/anytls.service <<EOF
 [Unit]
-Description=Sing-box AnyTLS Proxy
+Description=AnyTLS Server
 After=network.target
 
 [Service]
-Type=simple
-ExecStart=/usr/local/bin/sing-box run -c $CONFIG_FILE
+ExecStart=/etc/anytls/anytls -config /etc/anytls/config.json
 Restart=on-failure
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 启动并开机自启
+# 启动服务
+green "[5/5] 启动 AnyTLS..."
 systemctl daemon-reload
-systemctl enable sing-box
-systemctl restart sing-box
+systemctl enable anytls
+systemctl restart anytls
 
-# -------------------------------
-# 自动生成客户端配置
-# -------------------------------
-CLIENT_CONFIG_FILE="/root/anytls-client.json"
+# 获取公网IP
+SERVER_IP=$(curl -s ipv4.icanhazip.com || echo "YOUR_SERVER_IP")
 
-cat > $CLIENT_CONFIG_FILE <<EOF
-{
-  "type": "anytls",
-  "server": "$DOMAIN",
-  "server_port": $PORT,
-  "password": "$PASSWORD",
-  "tls": {
-    "insecure": $( [ "$CERT_TYPE" == "自签名" ] && echo true || echo false )
-  }
-}
-EOF
+# 生成节点链接
+NODE_URL="anytls://${PASSWORD}@${SERVER_IP}:${PORT}?insecure=1"
 
-# -------------------------------
-# 输出信息
-# -------------------------------
-echo "====================================="
-echo "Sing-box AnyTLS 代理部署完成！"
-echo "域名: $DOMAIN"
-echo "端口: $PORT"
-echo "密码: $PASSWORD"
-echo "证书类型: $CERT_TYPE"
-echo "服务状态: systemctl status sing-box"
-echo "客户端配置文件: $CLIENT_CONFIG_FILE"
-if [ "$CERT_TYPE" == "自签名" ]; then
-    echo "⚠️ 由于使用自签名证书，客户端需设置 'insecure': true 来跳过 TLS 验证。"
-fi
-echo "====================================="
+green "✅ AnyTLS 已安装并运行成功！"
+green "=============================="
+green " 服务端口: ${PORT}"
+green " 用户密码: ${PASSWORD}"
+green " 证书路径: /etc/anytls/anytls.crt"
+green " 节点链接: ${NODE_URL}"
+green "=============================="
