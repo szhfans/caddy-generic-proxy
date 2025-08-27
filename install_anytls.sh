@@ -15,9 +15,9 @@ red(){ echo -e "\033[31m$1\033[0m"; }
 read -p "请输入 AnyTLS 监听端口 [默认:443]：" PORT
 PORT=${PORT:-443}
 
-# 输入密码
-read -p "请输入连接密码 [默认:changeme123]：" PASSWORD
-PASSWORD=${PASSWORD:-changeme123}
+# 输入密码（支持环境变量 ANYTLS_PASS）
+read -p "请输入连接密码 [默认:changeme123]：" PASSWORD_INPUT
+PASSWORD=${PASSWORD_INPUT:-${ANYTLS_PASS:-changeme123}}
 
 # 安装依赖
 green "[1/5] 安装依赖..."
@@ -41,16 +41,25 @@ esac
 green "[2/5] 获取 AnyTLS 最新版本..."
 ANYTLS_VER=$(curl -s https://api.github.com/repos/anytls/anytls/releases/latest | grep tag_name | cut -d '"' -f 4)
 
+# fallback 防止 API 失效
+if [[ -z "$ANYTLS_VER" ]]; then
+    green "⚠️ GitHub API 获取失败，使用默认版本 v1.0.0"
+    ANYTLS_VER="v1.0.0"
+fi
+
 # 下载
 green "[3/5] 下载 AnyTLS ${ANYTLS_VER} (${ARCH})..."
 wget -N https://github.com/anytls/anytls/releases/download/${ANYTLS_VER}/anytls-linux-${ARCH}.zip
 unzip -o anytls-linux-${ARCH}.zip
 chmod +x anytls
 
-# 生成自签证书
+# 获取公网 IP（多重兜底）
+SERVER_IP=$(curl -s ipv4.icanhazip.com || curl -s ifconfig.me || curl -s ipinfo.io/ip || echo "YOUR_SERVER_IP")
+
+# 生成自签证书（CN 动态使用服务器 IP）
 green "[4/5] 生成自签证书..."
 openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
-  -subj "/C=US/ST=CA/L=SanFrancisco/O=AnyTLS/OU=Server/CN=example.com" \
+  -subj "/C=US/ST=CA/L=SanFrancisco/O=AnyTLS/OU=Server/CN=${SERVER_IP}" \
   -keyout /etc/anytls/anytls.key -out /etc/anytls/anytls.crt
 
 # 写配置文件
@@ -73,6 +82,7 @@ Description=AnyTLS Server
 After=network.target
 
 [Service]
+WorkingDirectory=/etc/anytls
 ExecStart=/etc/anytls/anytls -config /etc/anytls/config.json
 Restart=on-failure
 LimitNOFILE=65535
@@ -86,9 +96,6 @@ green "[5/5] 启动 AnyTLS..."
 systemctl daemon-reload
 systemctl enable anytls
 systemctl restart anytls
-
-# 获取公网 IP
-SERVER_IP=$(curl -s ipv4.icanhazip.com || echo "YOUR_SERVER_IP")
 
 # 节点链接
 NODE_URL="anytls://${PASSWORD}@${SERVER_IP}:${PORT}?insecure=1"
