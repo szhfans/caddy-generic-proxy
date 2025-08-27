@@ -32,8 +32,8 @@ check_system
 
 # 输入端口（增加端口验证）
 while true; do
-    read -p "请输入 AnyTLS 监听端口 [默认:443]：" PORT
-    PORT=${PORT:-443}
+    read -p "请输入 AnyTLS 监听端口 [默认:10567]：" PORT
+    PORT=${PORT:-10567}
     if [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; then
         # 检查端口是否被占用
         if netstat -tuln 2>/dev/null | grep -q ":$PORT " || ss -tuln 2>/dev/null | grep -q ":$PORT "; then
