@@ -1,5 +1,6 @@
 #!/bin/bash
-# AnyTLS 一键安装脚本（修复下载地址）
+# AnyTLS 一键安装脚本（终极修复版）
+# 多源下载 + 镜像加速 + 手动上传支持
 
 set -e
 
@@ -7,6 +8,7 @@ set -e
 green(){ echo -e "\033[32m$1\033[0m"; }
 red(){ echo -e "\033[31m$1\033[0m"; }
 yellow(){ echo -e "\033[33m$1\033[0m"; }
+blue(){ echo -e "\033[34m$1\033[0m"; }
 
 # 检查系统
 check_system() {
@@ -34,7 +36,7 @@ while true; do
     PORT=${PORT:-443}
     if [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; then
         # 检查端口是否被占用
-        if netstat -tuln | grep -q ":$PORT " 2>/dev/null; then
+        if netstat -tuln 2>/dev/null | grep -q ":$PORT " || ss -tuln 2>/dev/null | grep -q ":$PORT "; then
             yellow "⚠️ 端口 $PORT 已被占用，请选择其他端口"
             continue
         fi
@@ -77,7 +79,7 @@ case "$ARCH" in
     *) red "❌ 不支持的架构: $ARCH"; exit 1 ;;
 esac
 
-# 获取最新版本（增加错误处理和重试机制）
+# 获取最新版本
 green "[2/5] 获取 AnyTLS 最新版本..."
 ANYTLS_VER=""
 for i in {1..3}; do
@@ -97,57 +99,134 @@ fi
 
 green "获取到版本: $ANYTLS_VER"
 
-# 构造下载 URL（修复：去掉版本号前缀 v 用于文件名）
-ANYTLS_VER_NUM=${ANYTLS_VER#v}  # 去掉 v 前缀，得到纯数字版本号
-DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER_NUM}_linux_${ARCH}.zip"
+# 去掉版本号前缀 v
+ANYTLS_VER_NUM=${ANYTLS_VER#v}
 
-green "下载地址: $DOWNLOAD_URL"
+# 多个下载源
+DOWNLOAD_URLS=(
+    "https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER_NUM}_linux_${ARCH}.zip"
+    "https://ghproxy.com/https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER_NUM}_linux_${ARCH}.zip"
+    "https://mirror.ghproxy.com/https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER_NUM}_linux_${ARCH}.zip"
+)
 
-# 检查版本是否可用并下载（修复重定向问题）
 green "[3/5] 下载 AnyTLS ${ANYTLS_VER} (${ARCH})..."
-DOWNLOAD_SUCCESS=false
-for i in {1..3}; do
-    # 使用 curl 跟随重定向下载
-    if curl -L --connect-timeout 10 --max-time 60 -o anytls.zip "$DOWNLOAD_URL"; then
-        # 检查下载的文件是否有效
-        if [[ -f anytls.zip ]] && [[ $(stat -c%s anytls.zip 2>/dev/null || echo 0) -gt 1000 ]]; then
-            DOWNLOAD_SUCCESS=true
-            break
-        else
-            yellow "⚠️ 下载文件无效，重试中..."
-        fi
-    else
-        yellow "⚠️ 第 $i 次下载失败，重试中..."
-    fi
-    sleep 2
-done
 
+# 首先检查是否已存在文件
+if [[ -f "anytls.zip" ]]; then
+    yellow "发现已存在的 anytls.zip 文件"
+    read -p "是否使用现有文件？(y/N): " USE_EXISTING
+    if [[ "$USE_EXISTING" =~ ^[Yy]$ ]]; then
+        green "使用现有文件..."
+        DOWNLOAD_SUCCESS=true
+    else
+        rm -f anytls.zip
+        DOWNLOAD_SUCCESS=false
+    fi
+else
+    DOWNLOAD_SUCCESS=false
+fi
+
+# 如果没有现有文件或选择重新下载，则尝试下载
 if [[ "$DOWNLOAD_SUCCESS" != true ]]; then
-    red "❌ 下载失败，请检查网络连接或手动下载"
-    red "URL: $DOWNLOAD_URL"
+    for url in "${DOWNLOAD_URLS[@]}"; do
+        green "尝试从: $url"
+        
+        # 尝试多种下载方法
+        METHODS=(
+            "curl -L --connect-timeout 15 --max-time 120 -H 'User-Agent: Mozilla/5.0' -o anytls.zip"
+            "wget --timeout=120 --tries=2 --user-agent='Mozilla/5.0' -O anytls.zip"
+            "curl -L --connect-timeout 15 --max-time 120 -o anytls.zip"
+        )
+        
+        for method in "${METHODS[@]}"; do
+            yellow "使用方法: $method"
+            if $method "$url"; then
+                # 检查文件是否有效
+                if [[ -f anytls.zip ]] && [[ $(stat -c%s anytls.zip 2>/dev/null || wc -c < anytls.zip) -gt 1000 ]]; then
+                    green "✅ 下载成功！"
+                    DOWNLOAD_SUCCESS=true
+                    break 2
+                else
+                    yellow "⚠️ 下载的文件无效，尝试其他方法..."
+                    rm -f anytls.zip
+                fi
+            fi
+        done
+        
+        if [[ "$DOWNLOAD_SUCCESS" = true ]]; then
+            break
+        fi
+    done
+fi
+
+# 如果所有下载方法都失败，提供手动上传选项
+if [[ "$DOWNLOAD_SUCCESS" != true ]]; then
+    red "❌ 所有下载方法都失败了"
+    yellow "请选择以下选项："
+    yellow "1. 手动下载文件并上传到服务器"
+    yellow "2. 退出脚本"
     
-    # 提供手动下载提示
-    yellow "💡 你可以手动下载并放置到 /etc/anytls/ 目录："
-    yellow "1. 下载: $DOWNLOAD_URL"
-    yellow "2. 上传到服务器 /etc/anytls/ 目录"
-    yellow "3. 重新运行脚本"
-    exit 1
+    echo ""
+    yellow "手动下载地址（任选一个）："
+    for url in "${DOWNLOAD_URLS[@]}"; do
+        echo "   $url"
+    done
+    echo ""
+    yellow "下载后请将文件重命名为 anytls.zip 并上传到当前目录: $(pwd)"
+    
+    read -p "选择 [1-手动上传/2-退出]: " CHOICE
+    case $CHOICE in
+        1)
+            echo ""
+            yellow "请在另一个终端窗口中上传文件，然后按回车继续..."
+            read -p "按回车键继续..." 
+            if [[ -f "anytls.zip" ]] && [[ $(stat -c%s anytls.zip 2>/dev/null || wc -c < anytls.zip) -gt 1000 ]]; then
+                green "✅ 检测到有效的 anytls.zip 文件"
+                DOWNLOAD_SUCCESS=true
+            else
+                red "❌ 未检测到有效的 anytls.zip 文件"
+                exit 1
+            fi
+            ;;
+        *)
+            red "❌ 用户取消安装"
+            exit 1
+            ;;
+    esac
 fi
 
 # 解压并设置权限
+green "解压文件..."
 if ! unzip -o anytls.zip; then
     red "❌ 解压失败，可能下载文件损坏"
     exit 1
 fi
 
+# 检查解压后的文件
 if [[ ! -f "anytls" ]]; then
-    red "❌ 解压后未找到 anytls 可执行文件"
-    exit 1
+    # 列出所有文件，看看实际的文件名
+    yellow "解压后的文件列表："
+    ls -la
+    
+    # 尝试找到可执行文件
+    EXEC_FILE=$(find . -type f -executable -name "*anytls*" | head -1)
+    if [[ -n "$EXEC_FILE" ]]; then
+        yellow "找到可执行文件: $EXEC_FILE"
+        mv "$EXEC_FILE" anytls
+    else
+        red "❌ 未找到 anytls 可执行文件"
+        exit 1
+    fi
 fi
 
 chmod +x anytls
 
-# 获取公网 IP（增加更多 IP 获取源）
+# 验证可执行文件
+if ! ./anytls -version 2>/dev/null && ! ./anytls --version 2>/dev/null && ! ./anytls -h 2>/dev/null; then
+    yellow "⚠️ 无法验证 anytls 版本，但继续安装..."
+fi
+
+# 获取公网 IP
 green "获取服务器公网 IP..."
 SERVER_IP=""
 IP_SOURCES=(
@@ -156,6 +235,8 @@ IP_SOURCES=(
     "ipinfo.io/ip"
     "api.ipify.org"
     "checkip.amazonaws.com"
+    "ident.me"
+    "whatismyipaddress.com/api/v1/ip"
 )
 
 for source in "${IP_SOURCES[@]}"; do
@@ -175,7 +256,7 @@ if [[ -z "$SERVER_IP" ]]; then
     fi
 fi
 
-# 生成自签证书（CN 动态使用服务器 IP）
+# 生成自签证书
 green "[4/5] 生成自签证书..."
 openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
   -subj "/C=US/ST=CA/L=SanFrancisco/O=AnyTLS/OU=Server/CN=${SERVER_IP}" \
@@ -233,7 +314,8 @@ if systemctl start anytls; then
     else
         red "❌ AnyTLS 服务启动失败"
         red "错误日志："
-        systemctl status anytls --no-pager
+        systemctl status anytls --no-pager -l
+        journalctl -u anytls --no-pager -l --since "5 minutes ago"
         exit 1
     fi
 else
@@ -250,6 +332,7 @@ green " 服务端口: ${PORT}"
 green " 用户密码: ${PASSWORD}"
 green " 服务器IP: ${SERVER_IP}"
 green " 证书路径: /etc/anytls/anytls.crt"
+green " 配置文件: /etc/anytls/config.json"
 green " 节点链接: ${NODE_URL}"
 green "=============================="
 green ""
@@ -259,3 +342,7 @@ green " 停止服务: systemctl stop anytls"
 green " 重启服务: systemctl restart anytls"
 green " 查看状态: systemctl status anytls"
 green " 查看日志: journalctl -u anytls -f"
+green ""
+green "故障排除："
+green " 检查端口: netstat -tlnp | grep ${PORT}"
+green " 测试连接: curl -k https://${SERVER_IP}:${PORT}"
