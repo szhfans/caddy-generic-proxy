@@ -39,17 +39,24 @@ esac
 
 # 获取最新版本
 green "[2/5] 获取 AnyTLS 最新版本..."
-ANYTLS_VER=$(curl -s https://api.github.com/repos/anytls/anytls/releases/latest | grep tag_name | cut -d '"' -f 4)
+ANYTLS_VER=$(curl -s https://api.github.com/repos/anytls/anytls-go/releases/latest | grep tag_name | cut -d '"' -f 4)
 
-# fallback 防止 API 失效
+# fallback 默认版本 v0.0.8
 if [[ -z "$ANYTLS_VER" ]]; then
-    green "⚠️ GitHub API 获取失败，使用默认版本 v1.0.0"
-    ANYTLS_VER="v1.0.0"
+    green "⚠️ GitHub API 获取失败，使用默认版本 v0.0.8"
+    ANYTLS_VER="v0.0.8"
 fi
 
-# 下载
+# 检查版本是否可用并下载
+DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls-linux-${ARCH}.zip"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$DOWNLOAD_URL")
+if [[ "$STATUS" -ne 200 ]]; then
+    red "❌ 下载失败 – HTTP 状态: $STATUS. 版本 ${ANYTLS_VER} 可能不存在。"
+    exit 1
+fi
+
 green "[3/5] 下载 AnyTLS ${ANYTLS_VER} (${ARCH})..."
-wget -N https://github.com/anytls/anytls/releases/download/${ANYTLS_VER}/anytls-linux-${ARCH}.zip
+wget -N "$DOWNLOAD_URL"
 unzip -o anytls-linux-${ARCH}.zip
 chmod +x anytls
 
