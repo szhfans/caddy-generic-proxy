@@ -98,9 +98,8 @@ fi
 
 green "获取到版本: $ANYTLS_VER"
 
-# 构造下载 URL（去掉版本号前缀 v）
-ANYTLS_VER_NUM=${ANYTLS_VER#v}
-DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER_NUM}_linux_${ARCH}.zip"
+# 构造下载 URL（保持完整版本号格式）
+DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER}_linux_${ARCH}.zip"
 
 # 检查版本是否可用并下载（增加重试机制）
 green "[3/5] 下载 AnyTLS ${ANYTLS_VER} (${ARCH})..."
