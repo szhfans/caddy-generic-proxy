@@ -1,6 +1,5 @@
 #!/bin/bash
-# AnyTLS 一键安装脚本（自签证书版）
-# 自动识别架构 + 最新版本 + 节点链接
+# AnyTLS 一键安装脚本（修复下载地址）
 
 set -e
 
@@ -35,7 +34,7 @@ while true; do
     PORT=${PORT:-443}
     if [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; then
         # 检查端口是否被占用
-        if netstat -tuln | grep -q ":$PORT "; then
+        if netstat -tuln | grep -q ":$PORT " 2>/dev/null; then
             yellow "⚠️ 端口 $PORT 已被占用，请选择其他端口"
             continue
         fi
@@ -98,8 +97,11 @@ fi
 
 green "获取到版本: $ANYTLS_VER"
 
-# 构造下载 URL（保持完整版本号格式）
-DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER}_linux_${ARCH}.zip"
+# 构造下载 URL（修复：去掉版本号前缀 v 用于文件名）
+ANYTLS_VER_NUM=${ANYTLS_VER#v}  # 去掉 v 前缀，得到纯数字版本号
+DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER_NUM}_linux_${ARCH}.zip"
+
+green "下载地址: $DOWNLOAD_URL"
 
 # 检查版本是否可用并下载（增加重试机制）
 green "[3/5] 下载 AnyTLS ${ANYTLS_VER} (${ARCH})..."
@@ -119,6 +121,12 @@ done
 if [[ "$DOWNLOAD_SUCCESS" != true ]]; then
     red "❌ 下载失败，请检查网络连接或手动下载"
     red "URL: $DOWNLOAD_URL"
+    
+    # 提供手动下载提示
+    yellow "💡 你可以手动下载并放置到 /etc/anytls/ 目录："
+    yellow "1. 下载: $DOWNLOAD_URL"
+    yellow "2. 上传到服务器 /etc/anytls/ 目录"
+    yellow "3. 重新运行脚本"
     exit 1
 fi
 
