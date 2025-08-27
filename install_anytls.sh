@@ -47,17 +47,21 @@ if [[ -z "$ANYTLS_VER" ]]; then
     ANYTLS_VER="v0.0.8"
 fi
 
+# 构造下载 URL（去掉版本号前缀 v）
+ANYTLS_VER_NUM=${ANYTLS_VER#v}
+DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls_${ANYTLS_VER_NUM}_linux_${ARCH}.zip"
+
 # 检查版本是否可用并下载
-DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER}/anytls-linux-${ARCH}.zip"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$DOWNLOAD_URL")
 if [[ "$STATUS" -ne 200 ]]; then
     red "❌ 下载失败 – HTTP 状态: $STATUS. 版本 ${ANYTLS_VER} 可能不存在。"
+    red "URL: $DOWNLOAD_URL"
     exit 1
 fi
 
 green "[3/5] 下载 AnyTLS ${ANYTLS_VER} (${ARCH})..."
-wget -N "$DOWNLOAD_URL"
-unzip -o anytls-linux-${ARCH}.zip
+wget -O anytls.zip "$DOWNLOAD_URL"
+unzip -o anytls.zip
 chmod +x anytls
 
 # 获取公网 IP（多重兜底）
