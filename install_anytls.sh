@@ -103,18 +103,22 @@ DOWNLOAD_URL="https://github.com/anytls/anytls-go/releases/download/${ANYTLS_VER
 
 green "下载地址: $DOWNLOAD_URL"
 
-# 检查版本是否可用并下载（增加重试机制）
+# 检查版本是否可用并下载（修复重定向问题）
 green "[3/5] 下载 AnyTLS ${ANYTLS_VER} (${ARCH})..."
 DOWNLOAD_SUCCESS=false
 for i in {1..3}; do
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "$DOWNLOAD_URL")
-    if [[ "$STATUS" -eq 200 ]]; then
-        if wget -O anytls.zip --timeout=30 --tries=2 "$DOWNLOAD_URL"; then
+    # 使用 curl 跟随重定向下载
+    if curl -L --connect-timeout 10 --max-time 60 -o anytls.zip "$DOWNLOAD_URL"; then
+        # 检查下载的文件是否有效
+        if [[ -f anytls.zip ]] && [[ $(stat -c%s anytls.zip 2>/dev/null || echo 0) -gt 1000 ]]; then
             DOWNLOAD_SUCCESS=true
             break
+        else
+            yellow "⚠️ 下载文件无效，重试中..."
         fi
+    else
+        yellow "⚠️ 第 $i 次下载失败，重试中..."
     fi
-    yellow "⚠️ 第 $i 次下载失败 (HTTP: $STATUS)，重试中..."
     sleep 2
 done
 
