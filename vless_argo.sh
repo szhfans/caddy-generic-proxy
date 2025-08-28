@@ -98,7 +98,6 @@ run_argo(){
     DOMAIN=""
     TMP_FILE=$(mktemp)
     nohup cloudflared tunnel --url http://${LISTEN_IP}:${PORT} >$TMP_FILE 2>&1 &
-    PID=$!
     echo -e "${B}等待 Quick Tunnel 启动 (最多 30 秒)...${N}"
     for i in {1..30}; do
       sleep 1
