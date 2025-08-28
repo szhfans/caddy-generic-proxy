@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
-# ============================================================
-#  VLESS + WS + TLS + Argo 一键安装脚本 (交互式)
-#  sing-box + cloudflared 自动获取最新版本
-# ============================================================
 set -euo pipefail
 
+# ---------- 配色 ----------
 Y="\033[33m"; G="\033[32m"; R="\033[31m"; B="\033[36m"; N="\033[0m"
-need_root(){ [[ $EUID -ne 0 ]] && echo -e "${R}[错误] 请用 root 运行${N}" && exit 1; }
-need_root
 
+# ---------- 全局变量 ----------
 INSTALL_DIR="/usr/local/bin"
 SB_BIN="${INSTALL_DIR}/sing-box"
-SB_SVC="sing-box.service"
 SB_ETC="/etc/sing-box"
 SB_CFG="${SB_ETC}/config.json"
-CFD_BIN="/usr/local/bin/cloudflared"
+SB_SVC="sing-box.service"
+CFD_BIN="${INSTALL_DIR}/cloudflared"
 CFD_SVC="cloudflared-argo.service"
 LISTEN_IP="127.0.0.1"
 DEF_PORT=40000
@@ -25,6 +21,10 @@ cmd_exists(){ command -v "$1" >/dev/null 2>&1; }
 rand_uuid(){ cat /proc/sys/kernel/random/uuid; }
 rand_path(){ echo "/"$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n'); }
 
+need_root(){ [[ $EUID -ne 0 ]] && echo -e "${R}[错误] 请用 root 运行${N}" && exit 1; }
+need_root
+
+# ---------- 交互 ----------
 interactive(){
   echo -e "${B}=== 基本信息设置 ===${N}"
   read -rp "备注名称 [默认: ${DEF_NAME}]: " NAME; NAME=${NAME:-$DEF_NAME}
@@ -32,7 +32,7 @@ interactive(){
   read -rp "UUID [默认: ${UUID_DEF}]: " UUID; UUID=${UUID:-$UUID_DEF}
   read -rp "本地监听端口 [默认: ${DEF_PORT}]: " PORT; PORT=${PORT:-$DEF_PORT}
   PATH_DEF=$(rand_path)
-  read -rp "WebSocket 路径 [默认: ${DEF_PATH} ; 推荐随机 eg. ${PATH_DEF}]: " WSPATH; WSPATH=${WSPATH:-$DEF_PATH}
+  read -rp "WebSocket 路径 [默认: ${DEF_PATH}; 推荐随机 eg. ${PATH_DEF}]: " WSPATH; WSPATH=${WSPATH:-$DEF_PATH}
   [[ $WSPATH = /* ]] || WSPATH="/${WSPATH}"
 
   echo -e "\n${B}=== Argo 模式选择 ===${N}"
@@ -42,11 +42,13 @@ interactive(){
   if [[ "$MODE" = "1" ]]; then read -rp "输入 Cloudflare 隧道 Token: " CFD_TOKEN; fi
 }
 
+# ---------- 安装依赖 ----------
 install_deps(){
   apt-get update -y
   apt-get install -y curl wget tar jq
 }
 
+# ---------- 安装 sing-box ----------
 install_singbox(){
   if cmd_exists sing-box; then return; fi
   echo -e "${B}安装 sing-box ...${N}"
@@ -57,6 +59,7 @@ install_singbox(){
   install -m 755 sing-box-*-linux-amd64/sing-box ${SB_BIN}
 }
 
+# ---------- 安装 cloudflared ----------
 install_cloudflared(){
   if cmd_exists cloudflared; then return; fi
   echo -e "${B}安装 cloudflared ...${N}"
@@ -66,6 +69,7 @@ install_cloudflared(){
   install -m 755 cloudflared ${CFD_BIN}
 }
 
+# ---------- 写配置 ----------
 write_singbox_cfg(){
   mkdir -p "$SB_ETC"
   cat > "$SB_CFG" <<EOF
@@ -82,6 +86,7 @@ write_singbox_cfg(){
 EOF
 }
 
+# ---------- systemd 服务 ----------
 write_singbox_service(){
   cat > "/etc/systemd/system/${SB_SVC}" <<EOF
 [Unit]
@@ -119,15 +124,30 @@ Restart=always
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable ${CFD_SVC}
-  systemctl start ${CFD_SVC}
+  systemctl enable --now ${CFD_SVC}
 }
 
+# ---------- 获取 Quick Tunnel 域名 ----------
+get_quick_domain(){
+  echo -e "${B}等待 Quick Tunnel 启动并获取域名...${N}"
+  DOMAIN=""
+  for i in {1..10}; do
+    sleep 3
+    DOMAIN=$(journalctl -u ${CFD_SVC} -n 50 --no-pager | grep -oP 'https://.*trycloudflare.com' | head -n1 || true)
+    if [[ -n "$DOMAIN" ]]; then break; fi
+  done
+  if [[ -z "$DOMAIN" ]]; then
+    DOMAIN="请检查 cloudflared 是否启动"
+  fi
+  echo "$DOMAIN"
+}
+
+# ---------- 生成 vless 链接 ----------
 generate_vless_link(){
   if [[ "$MODE" = "1" ]]; then
-    DOMAIN="自定义隧道域名"
+    DOMAIN="请使用你的自定义域名"
   else
-    DOMAIN=$(${CFD_BIN} tunnel --url http://${LISTEN_IP}:${PORT} 2>&1 | grep -oP 'https://.*trycloudflare.com')
+    DOMAIN=$(get_quick_domain)
   fi
   VLESS_URL="vless://${UUID}@${DOMAIN}:${PORT}?type=ws&security=tls&host=${DOMAIN}&path=${WSPATH}#${NAME}"
   echo -e "\n${G}==== 节点链接 ====${N}"
@@ -135,6 +155,7 @@ generate_vless_link(){
   echo -e "${G}==== 完成 ====${N}"
 }
 
+# ---------- 主流程 ----------
 main(){
   interactive
   install_deps
