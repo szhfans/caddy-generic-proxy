@@ -1,6 +1,6 @@
 #!/bin/bash
 # AnyTLS 修正版安装脚本
-# 修复参数使用问题
+# 默认端口改为 1080，并增加端口占用检测
 
 set -e
 
@@ -52,8 +52,16 @@ green "✅ 检测到系统: $release"
 # 获取配置参数
 echo ""
 blue "请配置 AnyTLS 参数："
-read -p "请输入监听端口 [默认: 443]: " port
-port=${port:-443}
+read -p "请输入监听端口 [默认: 1080]: " port
+port=${port:-1080}
+
+# 检查端口占用
+while ss -tulnp 2>/dev/null | grep -q ":$port "; do
+    red "❌ 端口 $port 已被占用"
+    read -p "请输入新的监听端口: " port
+    port=${port:-1080}
+done
+green "✅ 使用端口: $port"
 
 read -p "请输入连接密码 [默认: anytls123]: " password  
 password=${password:-anytls123}
@@ -190,7 +198,7 @@ fi
 
 green "✅ 服务器IP: $server_ip"
 
-# 生成SSL证书（如果程序需要的话）
+# 生成SSL证书
 green "生成SSL证书..."
 openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
     -subj "/C=US/ST=CA/L=San Francisco/O=AnyTLS/CN=$server_ip" \
