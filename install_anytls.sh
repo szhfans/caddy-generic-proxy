@@ -1,6 +1,6 @@
 #!/bin/bash
-# AnyTLS 可靠一键安装脚本
-# 完全重写，解决所有已知问题
+# AnyTLS 修正版安装脚本
+# 修复参数使用问题
 
 set -e
 
@@ -16,7 +16,7 @@ blue(){ echo -e "\033[36m\033[01m$1\033[0m"; }
 # 欢迎信息
 clear
 green "========================================"
-green "       AnyTLS 一键安装脚本 v2.0"
+green "       AnyTLS 修正版安装脚本"
 green "========================================"
 echo ""
 
@@ -131,10 +131,6 @@ done
 
 if [[ "$download_success" != "true" ]]; then
     red "❌ 所有下载源都失败"
-    red "请手动下载以下文件并上传到 /etc/anytls/ 目录："
-    for url in "${download_urls[@]}"; do
-        echo "  $url" 
-    done
     exit 1
 fi
 
@@ -152,7 +148,6 @@ if [[ -f "anytls-server" ]]; then
 elif [[ -f "anytls" ]]; then
     green "✅ 程序文件已存在"
 else
-    # 查找任何可能的可执行文件
     exec_file=$(find . -type f -executable | grep -v ".zip" | head -1)
     if [[ -n "$exec_file" ]]; then
         mv "$exec_file" anytls
@@ -165,20 +160,11 @@ else
 fi
 
 chmod +x anytls
-rm -f *.zip *.md 2>/dev/null || true
+rm -f *.zip *.md anytls-client 2>/dev/null || true
 
-# 测试程序兼容性
-green "测试程序兼容性..."
-if timeout 5 ./anytls --help >/dev/null 2>&1 || timeout 5 ./anytls -h >/dev/null 2>&1; then
-    green "✅ 程序兼容性正常"
-elif timeout 10 ./anytls 2>/dev/null & test_pid=$!; sleep 2; kill $test_pid 2>/dev/null; then
-    green "✅ 程序可以运行"
-else
-    red "❌ 程序不兼容当前系统"
-    echo "系统信息: $(uname -a)"
-    echo "程序信息: $(file anytls 2>/dev/null || echo '无法获取')"
-    exit 1
-fi
+# 查看程序帮助信息
+green "查看程序使用方法..."
+./anytls --help || ./anytls -h || true
 
 # 获取服务器IP
 green "获取服务器IP..."
@@ -204,37 +190,38 @@ fi
 
 green "✅ 服务器IP: $server_ip"
 
-# 生成SSL证书
+# 生成SSL证书（如果程序需要的话）
 green "生成SSL证书..."
 openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
     -subj "/C=US/ST=CA/L=San Francisco/O=AnyTLS/CN=$server_ip" \
-    -keyout anytls.key -out anytls.crt >/dev/null 2>&1
-
-# 创建配置文件
-green "创建配置文件..."
-cat > config.json <<EOF
-{
-  "listen": ":$port",
-  "cert": "/etc/anytls/anytls.crt", 
-  "key": "/etc/anytls/anytls.key",
-  "auth": {
-    "mode": "password",
-    "password": "$password"
-  }
-}
-EOF
+    -keyout server.key -out server.crt >/dev/null 2>&1
 
 # 设置文件权限
 chown -R root:root /etc/anytls
 chmod 755 /etc/anytls
 chmod 755 /etc/anytls/anytls
-chmod 644 /etc/anytls/config.json
-chmod 644 /etc/anytls/anytls.crt
-chmod 600 /etc/anytls/anytls.key
+chmod 644 /etc/anytls/server.crt
+chmod 600 /etc/anytls/server.key
 
-# 创建systemd服务
-green "创建系统服务..."
-cat > /etc/systemd/system/anytls.service <<EOF
+# 构建启动参数
+listen_addr="0.0.0.0:$port"
+
+# 测试程序
+green "测试程序启动..."
+blue "启动参数: -l $listen_addr -p $password"
+
+# 先进行手动测试
+timeout 10 ./anytls -l "$listen_addr" -p "$password" &
+test_pid=$!
+sleep 3
+
+if kill -0 $test_pid 2>/dev/null; then
+    kill $test_pid 2>/dev/null || true
+    green "✅ 程序测试通过"
+    
+    # 创建systemd服务
+    green "创建系统服务..."
+    cat > /etc/systemd/system/anytls.service <<EOF
 [Unit]
 Description=AnyTLS Server
 Documentation=https://github.com/anytls/anytls-go
@@ -244,7 +231,7 @@ After=network.target nss-lookup.target
 Type=simple
 User=root
 Group=root
-ExecStart=/etc/anytls/anytls -config /etc/anytls/config.json
+ExecStart=/etc/anytls/anytls -l $listen_addr -p $password
 WorkingDirectory=/etc/anytls
 Restart=always
 RestartSec=10
@@ -257,22 +244,11 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-# 启动服务
-green "启动AnyTLS服务..."
-systemctl daemon-reload
-systemctl enable anytls >/dev/null 2>&1
-
-# 先手动测试
-blue "进行启动前测试..."
-timeout 10 ./anytls -config config.json &
-test_pid=$!
-sleep 3
-
-if kill -0 $test_pid 2>/dev/null; then
-    kill $test_pid
-    green "✅ 手动测试通过"
+    # 启动服务
+    green "启动AnyTLS服务..."
+    systemctl daemon-reload
+    systemctl enable anytls >/dev/null 2>&1
     
-    # 启动systemd服务
     if systemctl start anytls; then
         sleep 5
         
@@ -299,6 +275,7 @@ if kill -0 $test_pid 2>/dev/null; then
                     green "  服务端口: $port"
                     green "  连接密码: $password" 
                     green "  服务器IP: $server_ip"
+                    green "  监听地址: $listen_addr"
                     echo ""
                     yellow "📱 节点链接:"
                     echo "$node_link"
@@ -311,34 +288,50 @@ if kill -0 $test_pid 2>/dev/null; then
                     echo "  systemctl restart anytls   # 重启服务"
                     echo "  journalctl -u anytls -f    # 查看日志"
                     echo ""
+                    echo "  手动启动命令:"
+                    echo "  cd /etc/anytls && ./anytls -l $listen_addr -p $password"
+                    echo ""
                     yellow "🔥 复制节点链接到客户端即可使用！"
                     
                 else
-                    red "❌ 进程未运行"
+                    yellow "⚠️ systemd 服务运行但进程检测失败"
+                    echo "尝试检查："
+                    echo "  ps aux | grep anytls"
+                    echo "  journalctl -u anytls -f"
                 fi
             else
                 red "❌ 端口未监听"
                 echo "端口检查命令："
                 echo "  netstat -tlnp | grep $port"
                 echo "  ss -tlnp | grep $port"
+                echo ""
+                echo "尝试手动启动："
+                echo "  cd /etc/anytls && ./anytls -l $listen_addr -p $password"
             fi
         else
             red "❌ 服务启动失败"
+            echo "查看服务状态："
             systemctl status anytls --no-pager
+            echo ""
+            echo "查看服务日志："
+            journalctl -u anytls --no-pager -l --since "5 minutes ago"
+            echo ""
+            echo "尝试手动启动："
+            echo "  cd /etc/anytls && ./anytls -l $listen_addr -p $password"
         fi
     else
         red "❌ systemd 启动失败"
         echo "尝试手动启动："
-        echo "  cd /etc/anytls && ./anytls -config config.json"
+        echo "  cd /etc/anytls && ./anytls -l $listen_addr -p $password"
     fi
+    
 else
-    red "❌ 程序手动测试失败"
-    echo "可能原因："
-    echo "  1. 程序架构不匹配"
-    echo "  2. 系统缺少依赖库"
-    echo "  3. 端口被占用"
+    red "❌ 程序测试失败"
     echo ""
-    echo "系统信息: $(uname -a)"
+    echo "尝试手动运行查看错误："
+    echo "  cd /etc/anytls"
+    echo "  ./anytls -l $listen_addr -p $password"
 fi
 
+green ""
 green "安装脚本执行完成！"
