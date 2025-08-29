@@ -1,107 +1,105 @@
 #!/bin/bash
 set -e
 
+# ========== 配置 ==========
 CONFIG_FILE="/etc/sing-box/config.json"
 SERVICE_FILE="/etc/systemd/system/sing-box.service"
+ARGO_LOG="/tmp/argo.log"
+SING_BOX_BIN="/usr/local/bin/sing-box"
+CF_BIN="/usr/local/bin/cloudflared"
 
-# 依赖
-apt-get update -y
-apt-get install -y curl wget tar unzip jq socat
+# ========== 前置 ==========
+apt update -y
+apt install -y curl wget tar unzip jq socat
 
 # 下载最新 sing-box
-LATEST_URL=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r '.assets[] | select(.name | test("linux-amd64\\.tar\\.gz$")) | .browser_download_url')
-mkdir -p /usr/local/sing-box
-wget -O /tmp/sing-box.tar.gz "$LATEST_URL"
-tar -xzf /tmp/sing-box.tar.gz -C /usr/local/sing-box --strip-components=1
-ln -sf /usr/local/sing-box/sing-box /usr/local/bin/sing-box
+LATEST=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r '.tag_name')
+wget -O /tmp/sb.tar.gz https://github.com/SagerNet/sing-box/releases/download/${LATEST}/sing-box-${LATEST}-linux-amd64.tar.gz
+tar -xzf /tmp/sb.tar.gz -C /tmp
+install -m 755 /tmp/sing-box-${LATEST}-linux-amd64/sing-box $SING_BOX_BIN
 
-# 交互
-read -p "请输入 UUID (留空随机生成): " UUID
+# 下载 cloudflared
+wget -O $CF_BIN https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x $CF_BIN
+
+# ========== 用户输入 ==========
+read -p "请输入 UUID (留空自动生成): " UUID
 UUID=${UUID:-$(cat /proc/sys/kernel/random/uuid)}
 
 read -p "请输入 WebSocket 路径 (默认 /ws): " WSPATH
 WSPATH=${WSPATH:-/ws}
 
-read -p "请输入 本地监听端口 (默认 8080): " PORT
+read -p "请输入本地监听端口 (默认 8080): " PORT
 PORT=${PORT:-8080}
 
-read -p "请选择 Argo 模式 (1=Token隧道  2=Quick Tunnel): " MODE
-MODE=${MODE:-2}
+read -p "请输入节点名称 (默认 vless-argo): " NODENAME
+NODENAME=${NODENAME:-vless-argo}
 
-read -p "请输入 节点名称 (默认 vless-node): " NODENAME
-NODENAME=${NODENAME:-vless-node}
-
-# Argo 配置
-if [ "$MODE" = "1" ]; then
-    read -p "请输入你的 Cloudflare 隧道 Token: " ARGO_TOKEN
-    read -p "请输入你的自定义域名 (已在CF解析好): " ARGO_DOMAIN
-else
-    # Quick Tunnel 模式
-    wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
-    chmod +x /usr/local/bin/cloudflared
-    cloudflared tunnel --url http://127.0.0.1:$PORT > /tmp/argo.log 2>&1 &
-    sleep 5
-    ARGO_DOMAIN=$(grep -oE "https://[a-zA-Z0-9.-]+.trycloudflare.com" /tmp/argo.log | head -n1 | sed 's#https://##')
-    ARGO_TOKEN=""
-fi
-
-# 生成配置
+# ========== 写配置 ==========
 mkdir -p /etc/sing-box
+
 cat > $CONFIG_FILE <<EOF
 {
+  "log": { "level": "info" },
   "inbounds": [
     {
       "type": "vless",
       "listen": "0.0.0.0",
       "listen_port": $PORT,
       "users": [
-        {
-          "uuid": "$UUID",
-          "flow": ""
-        }
+        { "uuid": "$UUID" }
       ],
       "transport": {
         "type": "ws",
         "path": "$WSPATH"
       },
-      "tls": {
-        "enabled": false
-      }
+      "tls": {}
     }
   ],
   "outbounds": [
-    {
-      "type": "direct"
-    }
+    { "type": "direct" },
+    { "type": "block" }
   ]
 }
 EOF
 
-# systemd
+# ========== systemd ==========
 cat > $SERVICE_FILE <<EOF
 [Unit]
 Description=sing-box service
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/sing-box run -c $CONFIG_FILE
+ExecStart=$SING_BOX_BIN run -c $CONFIG_FILE
 Restart=always
-LimitNOFILE=51200
+RestartSec=3
+LimitNOFILE=4096
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable sing-box --now
+systemctl enable sing-box
+systemctl restart sing-box
 
-# 输出节点
-if [ "$MODE" = "1" ]; then
-    LINK="vless://$UUID@$ARGO_DOMAIN:443?type=ws&security=tls&host=$ARGO_DOMAIN&path=$WSPATH#$NODENAME"
-else
-    LINK="vless://$UUID@$ARGO_DOMAIN:443?type=ws&security=tls&host=$ARGO_DOMAIN&path=$WSPATH#$NODENAME"
+# ========== 启动 cloudflared Quick Tunnel ==========
+pkill -f "cloudflared" || true
+nohup $CF_BIN tunnel --no-autoupdate --url http://127.0.0.1:$PORT > $ARGO_LOG 2>&1 &
+
+# 等待生成域名
+echo "等待 Cloudflare Quick Tunnel 建立..."
+sleep 5
+DOMAIN=$(grep -o "https://[a-z0-9.-]*trycloudflare.com" $ARGO_LOG | head -n1 | sed 's#https://##')
+
+if [ -z "$DOMAIN" ]; then
+  echo "❌ 获取 Argo 隧道域名失败，请检查 cloudflared 日志：$ARGO_LOG"
+  exit 1
 fi
 
+# ========== 输出节点 ==========
+VLESS_LINK="vless://${UUID}@${DOMAIN}:443?encryption=none&security=tls&type=ws&host=${DOMAIN}&path=${WSPATH}#${NODENAME}"
+
 echo "==== 节点链接 ===="
-echo "$LINK"
-echo "完成！配置文件路径: $CONFIG_FILE"
+echo $VLESS_LINK
+echo "配置文件路径: $CONFIG_FILE"
