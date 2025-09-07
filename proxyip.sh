@@ -1,10 +1,10 @@
 #!/bin/bash
-# sing-box VLESS + QUIC/HTTP3 一键安装脚本
+# sing-box VLESS + QUIC/HTTP3 一键安装脚本（自签证书版）
 # Author: ChatGPT
 
 set -e
 
-echo "=== sing-box VLESS + HTTP/3 一键安装脚本 ==="
+echo "=== sing-box VLESS + HTTP/3 一键安装脚本（自签证书） ==="
 
 # 1. 输入域名
 read -p "请输入绑定到 VPS 的域名: " DOMAIN
@@ -19,24 +19,28 @@ PORT=${PORT:-443}
 
 # 3. 安装依赖
 apt update -y
-apt install -y curl socat cron
+apt install -y curl socat cron openssl
 
-# 4. 安装 acme.sh 并申请证书
-curl https://get.acme.sh | sh
-~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-~/.acme.sh/acme.sh --issue -d $DOMAIN --standalone --keylength ec-256 --force
-~/.acme.sh/acme.sh --install-cert -d $DOMAIN --ecc \
-  --fullchain-file /etc/sing-box/cert.pem \
-  --key-file /etc/sing-box/key.pem
-
-# 5. 安装 sing-box
+# 4. 安装 sing-box
 bash <(curl -fsSL https://sing-box.app/install.sh)
+
+# 5. 生成自签证书
+mkdir -p /etc/sing-box
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout /etc/sing-box/key.pem \
+  -out /etc/sing-box/cert.pem \
+  -days 365 \
+  -subj "/CN=$DOMAIN"
+
+echo "自签证书已生成："
+echo "证书路径：/etc/sing-box/cert.pem"
+echo "密钥路径：/etc/sing-box/key.pem"
 
 # 6. 生成 UUID
 UUID=$(cat /proc/sys/kernel/random/uuid)
 echo "生成的 UUID: $UUID"
 
-# 7. 写入配置文件
+# 7. 写入 sing-box 配置
 cat > /etc/sing-box/config.json <<EOF
 {
   "inbounds": [
@@ -79,7 +83,9 @@ echo "端口: $PORT"
 echo "UUID: $UUID"
 echo "协议: VLESS"
 echo "传输: HTTP/3 (QUIC)"
-echo "TLS: 已启用 (证书自动申请)"
+echo "TLS: 自签证书 (证书有效期 365 天)"
 echo ""
 echo "=== vless:// 导入链接 ==="
 echo "vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&sni=$DOMAIN&type=h3#$DOMAIN-H3"
+echo ""
+echo "⚠️ 注意：客户端需要开启“不验证证书”或“跳过证书验证”，因为使用的是自签证书。"
