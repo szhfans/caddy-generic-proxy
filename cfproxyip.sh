@@ -30,7 +30,7 @@ import requests import socket import re import time from bs4 import BeautifulSou
 
 ========== 配置区 ==========
 
-shodan_api_key = "YOUR_SHODAN_API_KEY"   # 去 https://account.shodan.io 获取
+shodan_api_key = "THcOqf2pcPUGGSAa5rpo376aipuEGVvd"   # 去 https://account.shodan.io 获取
 
 ========== 1. 查询 crt.sh 获取子域名 ==========
 
